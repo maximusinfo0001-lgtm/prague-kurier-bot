@@ -5,7 +5,6 @@ from aiogram.filters import Command
 from aiohttp import web
 import asyncio
 import requests
-import json
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 TURSO_URL = os.getenv("TURSO_URL")
@@ -16,31 +15,37 @@ dp = Dispatcher()
 
 
 def execute_sql(sql, params=None):
-    url = TURSO_URL.replace("libsql://", "https://") + "/v2/pipeline"
+    """Выполнить SQL через HTTP API Turso"""
+    url = TURSO_URL.replace("libsql://", "https://") + "/v2"
     headers = {
         "Authorization": f"Bearer {TURSO_TOKEN}",
         "Content-Type": "application/json"
     }
-    args = []
+    # Формируем SQL с подставленными параметрами
     if params:
         for p in params:
             if isinstance(p, str):
-                args.append({"type": "text", "value": p})
+                escaped = p.replace("'", "''")
+                sql = sql.replace("?", f"'{escaped}'", 1)
             else:
-                args.append({"type": "text", "value": str(p)})
-    data = {
-        "requests": [
-            {"type": "execute", "stmt": {"sql": sql, "args": args}}
-        ]
-    }
+                sql = sql.replace("?", str(p), 1)
+    
+    data = {"statements": [sql]}
     resp = requests.post(url, headers=headers, json=data)
-    return resp
+    resp.raise_for_status()
+    return resp.json()
 
 
 def init_db():
-    resp = execute_sql("CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY AUTOINCREMENT, address TEXT, note TEXT, created_at TEXT, updated_at TEXT)")
-    print("init_db status:", resp.status_code)
-    print("init_db body:", resp.text)
+    url = TURSO_URL.replace("libsql://", "https://") + "/v2"
+    headers = {
+        "Authorization": f"Bearer {TURSO_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    data = {"statements": ["CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY AUTOINCREMENT, address TEXT, note TEXT, created_at TEXT, updated_at TEXT)"]}
+    resp = requests.post(url, headers=headers, json=data)
+    resp.raise_for_status()
+    print("init_db:", resp.json())
 
 
 @dp.message(Command("start"))
@@ -74,11 +79,11 @@ async def add_note(message: types.Message):
     address = (parts[0] + " " + parts[1]).lower().strip()
     note = parts[2].strip()
     now = datetime.now().isoformat()
-    resp = execute_sql(
+    execute_sql(
         "INSERT INTO notes (address, note, created_at, updated_at) VALUES (?, ?, ?, ?)",
         [address, note, now, now]
     )
-    await message.reply(f"✅ Zapsáno: {address} → {note}\nStatus: {resp.status_code}")
+    await message.reply(f"✅ Zapsáno: {address} → {note}")
 
 
 @dp.message(Command("get"))
@@ -87,16 +92,47 @@ async def get_notes(message: types.Message):
     if not address:
         await message.reply("❌ Formát: /get Ulice číslo")
         return
-    resp = execute_sql(
+    result = execute_sql(
         "SELECT note, updated_at FROM notes WHERE address = ? ORDER BY updated_at DESC LIMIT 10",
         [address]
     )
-    await message.reply(f"DEBUG status: {resp.status_code}\nDEBUG body: {resp.text[:500]}")
+    rows = result["results"][0]["rows"]
+    if not rows:
+        await message.reply(f"📍 {address}\n\nZatím žádné poznámky.\nBuďte první: /add {address} vaše_poznámka")
+        return
+    response = f"📍 {address}\n\n"
+    for row in rows:
+        note = row[0]["value"]
+        updated = row[1]["value"]
+        try:
+            days_ago = (datetime.now() - datetime.fromisoformat(updated)).days
+            time_text = "dnes" if days_ago == 0 else "včera" if days_ago == 1 else f"před {days_ago} dny"
+        except Exception:
+            time_text = "datum neznámé"
+        response += f"• {note} ({time_text})\n"
+    await message.reply(response)
 
 
 @dp.message(Command("fix"))
 async def fix_note(message: types.Message):
-    await message.reply("Funkce /fix dočasně nedostupná.")
+    text = message.text.replace("/fix", "").strip()
+    parts = text.split(" ", 2)
+    if len(parts) < 3:
+        await message.reply("❌ Formát: /fix Ulice číslo staré nové")
+        return
+    address = (parts[0] + " " + parts[1]).lower().strip()
+    old_part = parts[2].split(" ")[0].strip()
+    new_part = " ".join(parts[2].split(" ")[1:]).strip()
+    now = datetime.now().isoformat()
+    result = execute_sql(
+        "UPDATE notes SET note = ?, updated_at = ? WHERE address = ? AND note LIKE ?",
+        [new_part, now, address, f"%{old_part}%"]
+    )
+    updated = result["results"][0]["rows_affected"]
+    if updated:
+        await message.reply(f"✅ Aktualizováno: {old_part} → {new_part}")
+    else:
+        await message.reply(f"❌ Nenalezeno: '{old_part}' pro {address}")
 
 
 @dp.message()
