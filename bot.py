@@ -5,6 +5,7 @@ from aiogram.filters import Command
 from aiohttp import web
 import asyncio
 import requests
+import json
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 TURSO_URL = os.getenv("TURSO_URL")
@@ -15,13 +16,11 @@ dp = Dispatcher()
 
 
 def execute_sql(sql, params=None):
-    """Выполнить SQL через HTTP API Turso"""
     url = TURSO_URL.replace("libsql://", "https://") + "/v2/pipeline"
     headers = {
         "Authorization": f"Bearer {TURSO_TOKEN}",
         "Content-Type": "application/json"
     }
-
     args = []
     if params:
         for p in params:
@@ -29,36 +28,25 @@ def execute_sql(sql, params=None):
                 args.append({"type": "text", "value": p})
             else:
                 args.append({"type": "text", "value": str(p)})
-
     data = {
         "requests": [
             {"type": "execute", "stmt": {"sql": sql, "args": args}}
         ]
     }
     resp = requests.post(url, headers=headers, json=data)
-    resp.raise_for_status()
-    return resp.json()
+    return resp
 
 
 def init_db():
-    execute_sql("""
-        CREATE TABLE IF NOT EXISTS notes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            address TEXT,
-            note TEXT,
-            created_at TEXT,
-            updated_at TEXT
-        )
-    """)
+    resp = execute_sql("CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY AUTOINCREMENT, address TEXT, note TEXT, created_at TEXT, updated_at TEXT)")
+    print("init_db status:", resp.status_code)
+    print("init_db body:", resp.text)
 
 
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
     await message.reply(
         "👋 **Pražský kurýr** — databáze zkušeností doručovatelů.\n\n"
-        "Zde najdete tipy k adresám v Praze:\n"
-        "kde je vchod, kód domofonu, kde je box v OC.\n\n"
-        "Příkazy:\n"
         "/add Adresa poznámka — přidat\n"
         "/get Adresa — zobrazit\n"
         "/fix Adresa staré nové — opravit\n"
@@ -69,13 +57,10 @@ async def start_cmd(message: types.Message):
 @dp.message(Command("help"))
 async def help_cmd(message: types.Message):
     await message.reply(
-        "📋 **Příkazy Pražského kurýra**\n\n"
+        "📋 **Příkazy:**\n\n"
         "➕ /add Adresa poznámka\n"
-        "Příklad: /add Vinohradska 15 kod 1234\n\n"
         "🔍 /get Adresa\n"
-        "Příklad: /get Vinohradska 15\n\n"
-        "✏️ /fix Adresa staré nové\n"
-        "Příklad: /fix Vinohradska 15 kod 5678"
+        "✏️ /fix Adresa staré nové"
     )
 
 
@@ -89,11 +74,11 @@ async def add_note(message: types.Message):
     address = (parts[0] + " " + parts[1]).lower().strip()
     note = parts[2].strip()
     now = datetime.now().isoformat()
-    execute_sql(
+    resp = execute_sql(
         "INSERT INTO notes (address, note, created_at, updated_at) VALUES (?, ?, ?, ?)",
         [address, note, now, now]
     )
-    await message.reply(f"✅ Zapsáno: {address} → {note}")
+    await message.reply(f"✅ Zapsáno: {address} → {note}\nStatus: {resp.status_code}")
 
 
 @dp.message(Command("get"))
@@ -102,54 +87,16 @@ async def get_notes(message: types.Message):
     if not address:
         await message.reply("❌ Formát: /get Ulice číslo")
         return
-    result = execute_sql(
+    resp = execute_sql(
         "SELECT note, updated_at FROM notes WHERE address = ? ORDER BY updated_at DESC LIMIT 10",
         [address]
     )
-    # Обрабатываем обе возможные структуры ответа
-    try:
-        rows = result["results"][0]["response"]["result"]["rows"]
-    except KeyError:
-        rows = result["results"][0]["rows"]
-    if not rows:
-        await message.reply(f"📍 {address}\n\nZatím žádné poznámky.\nBuďte první: /add {address} vaše_poznámka")
-        return
-    response = f"📍 {address}\n\n"
-    for row in rows:
-        note = row[0]["value"]
-        updated = row[1]["value"]
-        try:
-            days_ago = (datetime.now() - datetime.fromisoformat(updated)).days
-            time_text = "dnes" if days_ago == 0 else "včera" if days_ago == 1 else f"před {days_ago} dny"
-        except Exception:
-            time_text = "datum neznámé"
-        response += f"• {note} ({time_text})\n"
-    await message.reply(response)
+    await message.reply(f"DEBUG status: {resp.status_code}\nDEBUG body: {resp.text[:500]}")
 
 
 @dp.message(Command("fix"))
 async def fix_note(message: types.Message):
-    text = message.text.replace("/fix", "").strip()
-    parts = text.split(" ", 2)
-    if len(parts) < 3:
-        await message.reply("❌ Formát: /fix Ulice číslo staré nové")
-        return
-    address = (parts[0] + " " + parts[1]).lower().strip()
-    old_part = parts[2].split(" ")[0].strip()
-    new_part = " ".join(parts[2].split(" ")[1:]).strip()
-    now = datetime.now().isoformat()
-    result = execute_sql(
-        "UPDATE notes SET note = ?, updated_at = ? WHERE address = ? AND note LIKE ?",
-        [new_part, now, address, f"%{old_part}%"]
-    )
-    try:
-        updated = result["results"][0]["response"]["result"]["rows_affected"]
-    except KeyError:
-        updated = result["results"][0]["rows_affected"]
-    if updated:
-        await message.reply(f"✅ Aktualizováno: {old_part} → {new_part}")
-    else:
-        await message.reply(f"❌ Nenalezeno: '{old_part}' pro {address}")
+    await message.reply("Funkce /fix dočasně nedostupná.")
 
 
 @dp.message()
