@@ -5,7 +5,7 @@ from aiogram.filters import Command
 import asyncio
 from datetime import datetime
 
-BOT_TOKEN = os.getenv(8966293113:AAHV5ovVyjOxF2wDgvo3D4JFF7z7oI0QFAg)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 DB_PATH = "prague_kurier_notes.db"
 
 bot = Bot(token=BOT_TOKEN)
