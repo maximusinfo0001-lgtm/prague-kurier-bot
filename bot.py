@@ -4,7 +4,7 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiohttp import web
 import asyncio
-import libsql_client
+import requests
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 TURSO_URL = os.getenv("TURSO_URL")
@@ -14,16 +14,25 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 
-async def get_client():
-    return libsql_client.create_client(
-        url=TURSO_URL,
-        auth_token=TURSO_TOKEN
-    )
+def execute_sql(sql, params=None):
+    """Выполнить SQL через HTTP API Turso"""
+    url = TURSO_URL.replace("libsql://", "https://") + "/v2/pipeline"
+    headers = {
+        "Authorization": f"Bearer {TURSO_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "requests": [
+            {"type": "execute", "stmt": {"sql": sql, "args": params or []}}
+        ]
+    }
+    resp = requests.post(url, headers=headers, json=data)
+    resp.raise_for_status()
+    return resp.json()
 
 
-async def init_db():
-    client = await get_client()
-    await client.execute("""
+def init_db():
+    execute_sql("""
         CREATE TABLE IF NOT EXISTS notes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             address TEXT,
@@ -32,7 +41,6 @@ async def init_db():
             updated_at TEXT
         )
     """)
-    await client.close()
 
 
 @dp.message(Command("start"))
@@ -72,12 +80,10 @@ async def add_note(message: types.Message):
     address = (parts[0] + " " + parts[1]).lower().strip()
     note = parts[2].strip()
     now = datetime.now().isoformat()
-    client = await get_client()
-    await client.execute(
+    execute_sql(
         "INSERT INTO notes (address, note, created_at, updated_at) VALUES (?, ?, ?, ?)",
-        (address, note, now, now)
+        [address, note, now, now]
     )
-    await client.close()
     await message.reply(f"✅ Zapsáno: {address} → {note}")
 
 
@@ -87,22 +93,22 @@ async def get_notes(message: types.Message):
     if not address:
         await message.reply("❌ Formát: /get Ulice číslo")
         return
-    client = await get_client()
-    result = await client.execute(
+    result = execute_sql(
         "SELECT note, updated_at FROM notes WHERE address = ? ORDER BY updated_at DESC LIMIT 10",
-        (address,)
+        [address]
     )
-    rows = result.rows
-    await client.close()
+    rows = result["results"][0]["response"]["result"]["rows"]
     if not rows:
         await message.reply(f"📍 {address}\n\nZatím žádné poznámky.\nBuďte první: /add {address} vaše_poznámka")
         return
     response = f"📍 {address}\n\n"
-    for note, updated in rows:
+    for row in rows:
+        note = row[0]["value"]
+        updated = row[1]["value"]
         try:
             days_ago = (datetime.now() - datetime.fromisoformat(updated)).days
             time_text = "dnes" if days_ago == 0 else "včera" if days_ago == 1 else f"před {days_ago} dny"
-        except Exception:
+        except:
             time_text = "datum neznámé"
         response += f"• {note} ({time_text})\n"
     await message.reply(response)
@@ -119,13 +125,11 @@ async def fix_note(message: types.Message):
     old_part = parts[2].split(" ")[0].strip()
     new_part = " ".join(parts[2].split(" ")[1:]).strip()
     now = datetime.now().isoformat()
-    client = await get_client()
-    result = await client.execute(
+    result = execute_sql(
         "UPDATE notes SET note = ?, updated_at = ? WHERE address = ? AND note LIKE ?",
-        (new_part, now, address, f"%{old_part}%")
+        [new_part, now, address, f"%{old_part}%"]
     )
-    updated = result.rows_affected
-    await client.close()
+    updated = result["results"][0]["response"]["result"]["rows_affected"]
     if updated:
         await message.reply(f"✅ Aktualizováno: {old_part} → {new_part}")
     else:
@@ -138,7 +142,7 @@ async def any_message(message: types.Message):
 
 
 async def main():
-    await init_db()
+    init_db()
     asyncio.create_task(dp.start_polling(bot))
     app = web.Application()
     runner = web.AppRunner(app)
