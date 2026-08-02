@@ -1,22 +1,29 @@
 import os
-import sqlite3
+from datetime import datetime
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiohttp import web
 import asyncio
-from datetime import datetime
+import libsql_client
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-DB_PATH = "prague_kurier_notes.db"
+TURSO_URL = os.getenv("TURSO_URL")
+TURSO_TOKEN = os.getenv("TURSO_TOKEN")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
+async def get_client():
+    return libsql_client.create_client(
+        url=TURSO_URL,
+        auth_token=TURSO_TOKEN
+    )
+
+
+async def init_db():
+    client = await get_client()
+    await client.execute("""
         CREATE TABLE IF NOT EXISTS notes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             address TEXT,
@@ -25,8 +32,7 @@ def init_db():
             updated_at TEXT
         )
     """)
-    conn.commit()
-    conn.close()
+    await client.close()
 
 
 @dp.message(Command("start"))
@@ -66,12 +72,12 @@ async def add_note(message: types.Message):
     address = (parts[0] + " " + parts[1]).lower().strip()
     note = parts[2].strip()
     now = datetime.now().isoformat()
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("INSERT INTO notes (address, note, created_at, updated_at) VALUES (?, ?, ?, ?)",
-              (address, note, now, now))
-    conn.commit()
-    conn.close()
+    client = await get_client()
+    await client.execute(
+        "INSERT INTO notes (address, note, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        (address, note, now, now)
+    )
+    await client.close()
     await message.reply(f"✅ Zapsáno: {address} → {note}")
 
 
@@ -81,11 +87,13 @@ async def get_notes(message: types.Message):
     if not address:
         await message.reply("❌ Formát: /get Ulice číslo")
         return
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT note, updated_at FROM notes WHERE address = ? ORDER BY updated_at DESC LIMIT 10", (address,))
-    rows = c.fetchall()
-    conn.close()
+    client = await get_client()
+    result = await client.execute(
+        "SELECT note, updated_at FROM notes WHERE address = ? ORDER BY updated_at DESC LIMIT 10",
+        (address,)
+    )
+    rows = result.rows
+    await client.close()
     if not rows:
         await message.reply(f"📍 {address}\n\nZatím žádné poznámky.\nBuďte první: /add {address} vaše_poznámka")
         return
@@ -111,13 +119,13 @@ async def fix_note(message: types.Message):
     old_part = parts[2].split(" ")[0].strip()
     new_part = " ".join(parts[2].split(" ")[1:]).strip()
     now = datetime.now().isoformat()
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("UPDATE notes SET note = ?, updated_at = ? WHERE address = ? AND note LIKE ?",
-              (new_part, now, address, f"%{old_part}%"))
-    updated = c.rowcount
-    conn.commit()
-    conn.close()
+    client = await get_client()
+    result = await client.execute(
+        "UPDATE notes SET note = ?, updated_at = ? WHERE address = ? AND note LIKE ?",
+        (new_part, now, address, f"%{old_part}%")
+    )
+    updated = result.rows_affected
+    await client.close()
     if updated:
         await message.reply(f"✅ Aktualizováno: {old_part} → {new_part}")
     else:
@@ -130,10 +138,8 @@ async def any_message(message: types.Message):
 
 
 async def main():
-    init_db()
-    # Spustíme bota na pozadí
+    await init_db()
     asyncio.create_task(dp.start_polling(bot))
-    # HTTP server aby Render nezabil službu
     app = web.Application()
     runner = web.AppRunner(app)
     await runner.setup()
