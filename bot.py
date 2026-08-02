@@ -22,7 +22,6 @@ def execute_sql(sql, params=None):
         "Content-Type": "application/json"
     }
 
-    # Преобразуем параметры в формат Turso
     args = []
     if params:
         for p in params:
@@ -107,7 +106,11 @@ async def get_notes(message: types.Message):
         "SELECT note, updated_at FROM notes WHERE address = ? ORDER BY updated_at DESC LIMIT 10",
         [address]
     )
-    rows = result["results"][0]["response"]["result"]["rows"]
+    # Обрабатываем обе возможные структуры ответа
+    try:
+        rows = result["results"][0]["response"]["result"]["rows"]
+    except KeyError:
+        rows = result["results"][0]["rows"]
     if not rows:
         await message.reply(f"📍 {address}\n\nZatím žádné poznámky.\nBuďte první: /add {address} vaše_poznámka")
         return
@@ -139,7 +142,10 @@ async def fix_note(message: types.Message):
         "UPDATE notes SET note = ?, updated_at = ? WHERE address = ? AND note LIKE ?",
         [new_part, now, address, f"%{old_part}%"]
     )
-    updated = result["results"][0]["response"]["result"]["rows_affected"]
+    try:
+        updated = result["results"][0]["response"]["result"]["rows_affected"]
+    except KeyError:
+        updated = result["results"][0]["rows_affected"]
     if updated:
         await message.reply(f"✅ Aktualizováno: {old_part} → {new_part}")
     else:
