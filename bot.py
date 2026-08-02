@@ -21,9 +21,19 @@ def execute_sql(sql, params=None):
         "Authorization": f"Bearer {TURSO_TOKEN}",
         "Content-Type": "application/json"
     }
+
+    # Преобразуем параметры в формат Turso
+    args = []
+    if params:
+        for p in params:
+            if isinstance(p, str):
+                args.append({"type": "text", "value": p})
+            else:
+                args.append({"type": "text", "value": str(p)})
+
     data = {
         "requests": [
-            {"type": "execute", "stmt": {"sql": sql, "args": params or []}}
+            {"type": "execute", "stmt": {"sql": sql, "args": args}}
         ]
     }
     resp = requests.post(url, headers=headers, json=data)
@@ -108,7 +118,7 @@ async def get_notes(message: types.Message):
         try:
             days_ago = (datetime.now() - datetime.fromisoformat(updated)).days
             time_text = "dnes" if days_ago == 0 else "včera" if days_ago == 1 else f"před {days_ago} dny"
-        except:
+        except Exception:
             time_text = "datum neznámé"
         response += f"• {note} ({time_text})\n"
     await message.reply(response)
